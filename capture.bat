@@ -263,14 +263,20 @@ def save_screenshot(path):
     save_bitmap(hbmp, path)
 
 
+VK_CONTROL = 0x11
+VK_SHIFT   = 0x10
+VK_S       = 0x53
+VK_X       = 0x58
+
+
 def do_capture(script_dir):
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     path = os.path.join(tempfile.gettempdir(), f"screenshot_{timestamp}.png")
     try:
         save_screenshot(path)
         upload_to_gdrive(path, script_dir)
-    except Exception as e:
-        ctypes.windll.user32.MessageBoxW(0, str(e), "Error", 0)
+    except Exception:
+        pass
     finally:
         if os.path.exists(path):
             os.remove(path)
@@ -284,13 +290,34 @@ def main():
     )
 
     MOD_CONTROL = 0x0002
-    MOD_SHIFT = 0x0004
-    WM_HOTKEY = 0x0312
+    MOD_SHIFT   = 0x0004
+    WM_HOTKEY   = 0x0312
     HOTKEY_CAPTURE = 1
-    HOTKEY_EXIT = 2
+    HOTKEY_EXIT    = 2
 
-    user32.RegisterHotKey(None, HOTKEY_CAPTURE, MOD_CONTROL | MOD_SHIFT, 0x53)
-    user32.RegisterHotKey(None, HOTKEY_EXIT, MOD_CONTROL | MOD_SHIFT, 0x58)
+    capture_ok = user32.RegisterHotKey(None, HOTKEY_CAPTURE, MOD_CONTROL | MOD_SHIFT, VK_S)
+    exit_ok    = user32.RegisterHotKey(None, HOTKEY_EXIT,    MOD_CONTROL | MOD_SHIFT, VK_X)
+
+    stop_event = threading.Event()
+
+    def poll_keys():
+        prev_s = prev_x = False
+        while not stop_event.is_set():
+            ctrl  = bool(user32.GetAsyncKeyState(VK_CONTROL) & 0x8000)
+            shift = bool(user32.GetAsyncKeyState(VK_SHIFT)   & 0x8000)
+            s     = bool(user32.GetAsyncKeyState(VK_S)       & 0x8000)
+            x     = bool(user32.GetAsyncKeyState(VK_X)       & 0x8000)
+            if ctrl and shift:
+                if s and not prev_s:
+                    threading.Thread(target=do_capture, args=(script_dir,), daemon=True).start()
+                if x and not prev_x:
+                    stop_event.set()
+                    user32.PostQuitMessage(0)
+            prev_s, prev_x = s, x
+            time.sleep(0.01)
+
+    if not capture_ok or not exit_ok:
+        threading.Thread(target=poll_keys, daemon=True).start()
 
     token = init_gdiplus()
     try:
@@ -304,13 +331,13 @@ def main():
             user32.TranslateMessage(ctypes.byref(msg))
             user32.DispatchMessageW(ctypes.byref(msg))
     finally:
-        user32.UnregisterHotKey(None, HOTKEY_CAPTURE)
-        user32.UnregisterHotKey(None, HOTKEY_EXIT)
+        stop_event.set()
+        if capture_ok:
+            user32.UnregisterHotKey(None, HOTKEY_CAPTURE)
+        if exit_ok:
+            user32.UnregisterHotKey(None, HOTKEY_EXIT)
         shutdown_gdiplus(token)
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        ctypes.windll.user32.MessageBoxW(0, str(e), "Fatal Error", 0)
+    main()
